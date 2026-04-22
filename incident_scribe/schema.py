@@ -53,6 +53,4 @@ class IncidentReport(BaseModel):
     open_questions: list[str] = Field(
         default_factory=list, description="Unresolved questions from the thread"
     )
-    lessons_learned: list[str] = Field(
-        default_factory=list, description="Key takeaways"
-    )
+    lessons_learned: list[str] = Field(default_factory=list, description="Key takeaways")

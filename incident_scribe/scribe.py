@@ -93,9 +93,7 @@ def _call_claude(
     return output_text, input_tokens, output_tokens
 
 
-def extract_events(
-    client: anthropic.Anthropic, stream: MessageStream
-) -> list[IncidentEvent]:
+def extract_events(client: anthropic.Anthropic, stream: MessageStream) -> list[IncidentEvent]:
     """Extract discrete events from the thread. Claude returns message IDs, not timestamps."""
     context = _build_message_context(stream)
     prompt = f"Identify the key incident events in this Slack thread:\n\n{context}"
