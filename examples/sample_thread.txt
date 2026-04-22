@@ -1,0 +1,11 @@
+[14:21] pagerduty-bot: :rotating_light: FIRING: High error rate on report-generation-service (>5% 5xx for 5m). Severity: P2.
+[14:22] oncall-eng: Acking. Looking at it now.
+[14:23] oncall-eng: Grafana shows postgres-primary connection pool at 200/200. Something is holding all connections.
+[14:24] oncall-eng: Found it — report job R-8821 started at 14:21 and is running a full table scan on the events table. 200M rows.
+[14:25] db-oncall: Confirmed. Missing index on events.tenant_id. Query planner fell back to seq scan.
+[14:26] oncall-eng: Killing R-8821 now.
+[14:27] oncall-eng: R-8821 killed. Pool draining — 45/200. Error rates dropping.
+[14:29] pagerduty-bot: RESOLVED: High error rate on report-generation-service. Duration: 8 minutes.
+[14:30] db-oncall: I'll file a ticket for the index — composite on (tenant_id, created_at). Should we move scheduled jobs to a read replica?
+[14:31] oncall-eng: Good call. Also wondering why the slow query alert didn't fire. Adding to action items.
+[14:32] incident-commander: Impact: ~3,200 users got 503s on /api/v1/reports. No revenue impact confirmed yet. Marking resolved. Post-mortem needed by EOD Friday.

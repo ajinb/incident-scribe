@@ -1,0 +1,18 @@
+[
+  {
+    "user": "pagerduty-bot",
+    "ts": "1713451260.000100",
+    "text": "FIRING: High error rate on report-generation-service (>5% 5xx for 5m). Severity: P2.",
+    "reactions": [{"name": "eyes", "count": 3}]
+  },
+  {
+    "user": "oncall-eng",
+    "ts": "1713451320.000200",
+    "text": "Acking. Looking at it now."
+  },
+  {
+    "user": "oncall-eng",
+    "ts": "1713451380.000300",
+    "text": "Grafana shows postgres-primary connection pool at 200/200."
+  }
+]

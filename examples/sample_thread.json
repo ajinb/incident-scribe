@@ -1,0 +1,59 @@
+[
+  {
+    "user": "pagerduty-bot",
+    "ts": "1713451260.000100",
+    "text": ":rotating_light: FIRING: High error rate on report-generation-service (>5% 5xx for 5m). Severity: P2. Runbook: https://wiki.internal/runbooks/report-gen",
+    "reactions": [{"name": "eyes", "count": 3}]
+  },
+  {
+    "user": "oncall-eng",
+    "ts": "1713451320.000200",
+    "text": "Acking. Looking at it now.",
+    "reactions": [{"name": "thumbsup", "count": 1}]
+  },
+  {
+    "user": "oncall-eng",
+    "ts": "1713451380.000300",
+    "text": "Grafana shows postgres-primary connection pool at 200/200. Something is holding all connections."
+  },
+  {
+    "user": "oncall-eng",
+    "ts": "1713451440.000400",
+    "text": "Found it — report job R-8821 started at 14:21 and is running a full table scan on the events table. 200M rows. This is what's eating the pool."
+  },
+  {
+    "user": "db-oncall",
+    "ts": "1713451500.000500",
+    "text": "Confirmed. The events table is missing an index on tenant_id. The query planner is doing a seq scan. Probably worked fine when the table was smaller."
+  },
+  {
+    "user": "oncall-eng",
+    "ts": "1713451560.000600",
+    "text": "Killing R-8821 now."
+  },
+  {
+    "user": "oncall-eng",
+    "ts": "1713451620.000700",
+    "text": "R-8821 killed. Connection pool draining — down to 45/200. Error rates dropping."
+  },
+  {
+    "user": "pagerduty-bot",
+    "ts": "1713451740.000800",
+    "text": ":white_check_mark: RESOLVED: High error rate on report-generation-service. Duration: 8 minutes."
+  },
+  {
+    "user": "db-oncall",
+    "ts": "1713451800.000900",
+    "text": "I'll file a ticket for the index. Should be a composite on (tenant_id, created_at). Also — should we move scheduled jobs to a read replica? This would have been a non-event if the report job wasn't on primary."
+  },
+  {
+    "user": "oncall-eng",
+    "ts": "1713451860.001000",
+    "text": "Good call. Also wondering why the slow query alert didn't fire. The threshold might need a review. Adding both to action items."
+  },
+  {
+    "user": "incident-commander",
+    "ts": "1713451920.001100",
+    "text": "Impact: roughly 3,200 users got 503s on /api/v1/reports during the 8 min window. No revenue impact confirmed yet — checking with product. Marking this as resolved. Post-mortem doc needed by EOD Friday."
+  }
+]
