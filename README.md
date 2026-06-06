@@ -1,5 +1,9 @@
 # incident-scribe
 
+[![CI](https://github.com/ajinb/incident-scribe/actions/workflows/ci.yml/badge.svg)](https://github.com/ajinb/incident-scribe/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+
 **Slack thread → incident report, powered by Claude.**
 
 Drop in a messy Slack incident channel thread. Get back a blameless, structured incident report in under 30 seconds — timeline, impact, root cause, remediation, and open questions. Markdown or JSON.
