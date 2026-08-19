@@ -32,9 +32,7 @@ def main() -> None:
         action="store_true",
         help="Also save output to .incident-scribe/drafts/",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"incident-scribe {__version__}"
-    )
+    parser.add_argument("--version", action="version", version=f"incident-scribe {__version__}")
     args = parser.parse_args()
 
     # Load input
