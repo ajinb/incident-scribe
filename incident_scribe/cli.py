@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import __version__
 from .integrations.markdown_writer import render_markdown
 from .patterns.compensating import save_draft, save_draft_json
 from .scribe import generate_report
@@ -31,7 +32,9 @@ def main() -> None:
         action="store_true",
         help="Also save output to .incident-scribe/drafts/",
     )
-    parser.add_argument("--version", action="version", version="incident-scribe 1.0.0")
+    parser.add_argument(
+        "--version", action="version", version=f"incident-scribe {__version__}"
+    )
     args = parser.parse_args()
 
     # Load input
