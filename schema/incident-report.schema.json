@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "TimelineEntry": {
+      "description": "A timeline entry with a deterministic timestamp resolved from message IDs.",
+      "properties": {
+        "time": {
+          "description": "UTC timestamp string",
+          "title": "Time",
+          "type": "string"
+        },
+        "event": {
+          "description": "Description of what happened",
+          "title": "Event",
+          "type": "string"
+        }
+      },
+      "required": [
+        "time",
+        "event"
+      ],
+      "title": "TimelineEntry",
+      "type": "object"
+    }
+  },
+  "description": "The final structured incident report.",
+  "properties": {
+    "summary": {
+      "description": "2-3 sentence incident summary",
+      "title": "Summary",
+      "type": "string"
+    },
+    "impact": {
+      "description": "What was affected, user/revenue impact if known",
+      "title": "Impact",
+      "type": "string"
+    },
+    "timeline": {
+      "description": "Ordered timeline of key events",
+      "items": {
+        "$ref": "#/$defs/TimelineEntry"
+      },
+      "title": "Timeline",
+      "type": "array"
+    },
+    "root_cause": {
+      "description": "Root cause or 'Under investigation'",
+      "title": "Root Cause",
+      "type": "string"
+    },
+    "remediation": {
+      "description": "Steps taken and planned",
+      "title": "Remediation",
+      "type": "string"
+    },
+    "open_questions": {
+      "description": "Unresolved questions from the thread",
+      "items": {
+        "type": "string"
+      },
+      "title": "Open Questions",
+      "type": "array"
+    },
+    "lessons_learned": {
+      "description": "Key takeaways",
+      "items": {
+        "type": "string"
+      },
+      "title": "Lessons Learned",
+      "type": "array"
+    }
+  },
+  "required": [
+    "summary",
+    "impact",
+    "timeline",
+    "root_cause",
+    "remediation"
+  ],
+  "title": "IncidentReport",
+  "type": "object"
+}
