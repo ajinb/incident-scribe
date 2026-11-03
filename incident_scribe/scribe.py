@@ -1,171 +1,171 @@
-"""Core orchestration: parse → extract → synthesize → validate.
+"""Core orchestration: parse → redact → extract → validate → synthesize → resolve.
 
-All Claude API calls go through this module with retry, rate limiting,
-event sourcing, and structured output validation.
+The model never produces a timestamp. It cites message IDs; this module checks
+every cited ID against the parsed thread and resolves times itself.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import re
+import logging
 
 import anthropic
-from pydantic import ValidationError
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 
-from .patterns.event_sourcing import ApiTimer, log_api_call
-from .prompts import (
-    EXTRACT_RETRY,
-    EXTRACT_SYSTEM,
-    PROMPT_VERSION,
-    SYNTHESIZE_RETRY,
-    SYNTHESIZE_SYSTEM,
+from .claude import call_structured
+from .prompts import EXTRACT_SYSTEM, ID_RETRY, SYNTHESIZE_SYSTEM
+from .redact import RedactMode, Redactor
+from .schema import (
+    ExtractedEvents,
+    IncidentEvent,
+    IncidentReport,
+    MessageStream,
+    ReportDraft,
+    TimelineEntry,
 )
-from .schema import IncidentEvent, IncidentReport, MessageStream, TimelineEntry
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
-MAX_RETRIES = 3
+log = logging.getLogger(__name__)
 
-
-def _get_model() -> str:
-    return os.environ.get("INCIDENT_SCRIBE_MODEL", DEFAULT_MODEL)
+_TS_FORMAT = "%Y-%m-%d %H:%M:%S UTC"
 
 
-def _get_max_tokens() -> int:
-    return int(os.environ.get("INCIDENT_SCRIBE_MAX_TOKENS", "4096"))
-
-
-def _strip_code_block(text: str) -> str:
-    """Remove markdown code fences if present."""
-    m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
-    return m.group(1) if m else text
-
-
-def _build_message_context(stream: MessageStream) -> str:
-    """Format the message stream for the LLM prompt."""
+def _build_message_context(stream: MessageStream, redactor: Redactor) -> str:
+    """Format the message stream for the LLM prompt, redacting as we go."""
     lines = []
     for msg in stream.messages:
-        ts = msg.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
-        lines.append(f"[{msg.id}] {ts} | {msg.actor}: {msg.text}")
+        ts = msg.timestamp.strftime(_TS_FORMAT)
+        lines.append(f"[{msg.id}] {ts} | {redactor.redact(msg.actor)}: {redactor.redact(msg.text)}")
     return "\n".join(lines)
 
 
-@retry(
-    stop=stop_after_attempt(MAX_RETRIES),
-    wait=wait_exponential_jitter(initial=1, max=10),
-    reraise=True,
-)
-def _call_claude(
+def validate_events(
+    stream: MessageStream, events: list[IncidentEvent]
+) -> tuple[list[IncidentEvent], list[str]]:
+    """Split events into (valid, unknown_ids), deduplicated and in thread order."""
+    order = {m.id: i for i, m in enumerate(stream.messages)}
+    valid: list[IncidentEvent] = []
+    unknown: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for ev in events:
+        if ev.message_id not in order:
+            unknown.append(ev.message_id)
+            continue
+        key = (ev.message_id, ev.event_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        valid.append(ev)
+    valid.sort(key=lambda e: order[e.message_id])
+    return valid, unknown
+
+
+def extract_events(
     client: anthropic.Anthropic,
-    system: str,
-    user_content: str,
-    stage: str,
-    temperature: float = 0.2,
-) -> tuple[str, int, int]:
-    """Make a Claude API call with retry, timing, and audit logging."""
-    model = _get_model()
-
-    with ApiTimer() as timer:
-        response = client.messages.create(
-            model=model,
-            max_tokens=_get_max_tokens(),
-            temperature=temperature,
-            system=system,
-            messages=[{"role": "user", "content": user_content}],
-        )
-
-    output_text = response.content[0].text
-    input_tokens = response.usage.input_tokens
-    output_tokens = response.usage.output_tokens
-
-    log_api_call(
-        stage=stage,
-        model=model,
-        prompt_version=PROMPT_VERSION,
-        input_text=user_content[:500],
-        output_text=output_text[:500],
-        latency_ms=timer.elapsed_ms,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-    )
-
-    return output_text, input_tokens, output_tokens
-
-
-def extract_events(client: anthropic.Anthropic, stream: MessageStream) -> list[IncidentEvent]:
-    """Extract discrete events from the thread. Claude returns message IDs, not timestamps."""
-    context = _build_message_context(stream)
+    stream: MessageStream,
+    redactor: Redactor | None = None,
+) -> list[IncidentEvent]:
+    """Extract discrete events. Hallucinated message IDs get one corrective retry, then drop."""
+    redactor = redactor or Redactor()
+    context = _build_message_context(stream, redactor)
     prompt = f"Identify the key incident events in this Slack thread:\n\n{context}"
 
-    for attempt in range(MAX_RETRIES):
-        system = EXTRACT_SYSTEM if attempt == 0 else f"{EXTRACT_SYSTEM}\n\n{EXTRACT_RETRY}"
-        raw, _, _ = _call_claude(client, system, prompt, stage="extract", temperature=0.2)
+    result = call_structured(
+        client,
+        system=EXTRACT_SYSTEM,
+        user_content=prompt,
+        output_model=ExtractedEvents,
+        stage="extract",
+    )
+    valid, unknown = validate_events(stream, result.events)
+    if not unknown:
+        return valid
 
-        try:
-            parsed = json.loads(_strip_code_block(raw))
-            events = [IncidentEvent(**e) for e in parsed]
-            return events
-        except (json.JSONDecodeError, ValidationError):
-            if attempt == MAX_RETRIES - 1:
-                raise
-
-    return []  # unreachable due to reraise
+    retry_prompt = f"{prompt}\n\n{ID_RETRY.format(ids=', '.join(sorted(set(unknown))))}"
+    result = call_structured(
+        client,
+        system=EXTRACT_SYSTEM,
+        user_content=retry_prompt,
+        output_model=ExtractedEvents,
+        stage="extract_retry",
+    )
+    valid, unknown = validate_events(stream, result.events)
+    if unknown:
+        log.warning("dropping %d event(s) citing unknown message IDs: %s", len(unknown), unknown)
+    return valid
 
 
 def synthesize_report(
     client: anthropic.Anthropic,
     stream: MessageStream,
     events: list[IncidentEvent],
+    redactor: Redactor | None = None,
 ) -> IncidentReport:
-    """Stage 2: Synthesize a structured report from validated events.
+    """Write the report. Timeline rows cite message IDs; times are looked up, not generated."""
+    redactor = redactor or Redactor()
+    ts_lookup = {msg.id: msg.timestamp.strftime(_TS_FORMAT) for msg in stream.messages}
 
-    Timestamps are resolved deterministically from message IDs — the LLM
-    never generates timestamps.
-    """
-    # Build a message ID → timestamp lookup
-    ts_lookup = {msg.id: msg.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC") for msg in stream.messages}
-
-    # Build the events context with resolved timestamps
-    event_lines = []
-    for ev in events:
-        ts = ts_lookup.get(ev.message_id, "unknown time")
-        event_lines.append(f"- [{ts}] {ev.event_type}: {ev.description}")
-    events_text = "\n".join(event_lines)
-
-    context = _build_message_context(stream)
+    event_lines = [
+        f"- [{ev.message_id}] {ts_lookup[ev.message_id]} {ev.event_type}: "
+        f"{redactor.redact(ev.description)}"
+        for ev in events
+        if ev.message_id in ts_lookup
+    ]
     prompt = (
-        f"Validated incident events (with timestamps):\n\n{events_text}\n\n"
-        f"Original thread messages:\n\n{context}"
+        "Validated incident events (message ID, timestamp, type):\n\n"
+        + "\n".join(event_lines)
+        + "\n\nOriginal thread messages:\n\n"
+        + _build_message_context(stream, redactor)
     )
 
-    for attempt in range(MAX_RETRIES):
-        system = SYNTHESIZE_SYSTEM if attempt == 0 else f"{SYNTHESIZE_SYSTEM}\n\n{SYNTHESIZE_RETRY}"
-        raw, _, _ = _call_claude(client, system, prompt, stage="synthesize", temperature=0.4)
+    draft = call_structured(
+        client,
+        system=SYNTHESIZE_SYSTEM,
+        user_content=prompt,
+        output_model=ReportDraft,
+        stage="synthesize",
+    )
 
-        try:
-            parsed = json.loads(_strip_code_block(raw))
-            # Normalize timeline entries
-            if "timeline" in parsed:
-                parsed["timeline"] = [
-                    TimelineEntry(time=e.get("time", ""), event=e.get("event", ""))
-                    for e in parsed["timeline"]
-                ]
-            report = IncidentReport(**parsed)
-            return report
-        except (json.JSONDecodeError, ValidationError):
-            if attempt == MAX_RETRIES - 1:
-                raise
+    order = {m.id: i for i, m in enumerate(stream.messages)}
+    rows = [row for row in draft.timeline if row.message_id in ts_lookup]
+    dropped = len(draft.timeline) - len(rows)
+    if dropped:
+        log.warning("dropped %d timeline row(s) citing unknown message IDs", dropped)
+    rows.sort(key=lambda r: order[r.message_id])
 
-    raise RuntimeError("Failed to synthesize report after retries")  # unreachable
+    return IncidentReport(
+        summary=draft.summary,
+        impact=draft.impact,
+        timeline=[TimelineEntry(time=ts_lookup[r.message_id], event=r.event) for r in rows],
+        root_cause=draft.root_cause,
+        remediation=draft.remediation,
+        open_questions=draft.open_questions,
+        lessons_learned=draft.lessons_learned,
+    )
 
 
-def generate_report(thread_data: str) -> IncidentReport:
-    """Full pipeline: parse → extract → synthesize → validate."""
+def generate_report_from_stream(
+    stream: MessageStream,
+    *,
+    redact: RedactMode = "secrets",
+    client: anthropic.Anthropic | None = None,
+) -> IncidentReport:
+    client = client or anthropic.Anthropic()
+    redactor = Redactor(mode=redact)
+    events = extract_events(client, stream, redactor)
+    report = synthesize_report(client, stream, events, redactor)
+    if redactor.findings:
+        log.info("redacted before sending: %s", redactor.findings)
+    return report
+
+
+def generate_report(
+    thread_data: str,
+    *,
+    redact: RedactMode = "secrets",
+    tz: str = "UTC",
+    reference_date: str | None = None,
+    client: anthropic.Anthropic | None = None,
+) -> IncidentReport:
+    """Full pipeline from raw thread text (Slack export JSON or pasted text)."""
     from .parser import parse_thread
 
-    stream = parse_thread(thread_data)
-    client = anthropic.Anthropic()
-    events = extract_events(client, stream)
-    report = synthesize_report(client, stream, events)
-    return report
+    stream = parse_thread(thread_data, tz=tz, reference_date=reference_date)
+    return generate_report_from_stream(stream, redact=redact, client=client)
